@@ -1,0 +1,1512 @@
+---
+title: "final_nicumaps"
+author: "Elizabeth Blake"
+date: "2023-08-01"
+output: html_document
+---
+
+```{r Libs}
+
+#installing and loading necessary libraries 
+if(!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+pacman::p_load(here, folders, readr, dplyr, tidyr, stringr, purrr, lubridate, knitr, snakecase, ggplot2, usmap, ggthemes, cowplot, cdlTools, magrittr, rgdal, spdep, usethis, rlang, tidygeocoder, mapview, ggmap, sf, ggrepel, tigris, maptools, MetBrewer, maps, tidyverse, RColorBrewer, urbnmapr, tmap, kableExtra, patchwork)
+
+```
+
+
+```{r}
+
+#loading in each year of NICU data  
+nicu96 <- read_csv("cleannicu96.csv")
+nicu11 <- read_csv("cleannicu11.csv")
+nicu23 <- read_csv("cleannicu23.csv")
+
+```
+
+
+```{r Geocoding Addys}
+
+#setting up google api
+register_google( key="AIzaSyDNT-FRCdRq8Fyk_124KLQzQd9Vv2AmbQM", write = TRUE) 
+
+#geocoding addresses using addresses column to map
+nicu96.geo <- mutate_geocode(nicu96, location = full_address, output = "latlona")
+nicu11.geo <- mutate_geocode(nicu11, location = full_address, output = "latlona")
+nicu23.geo <- mutate_geocode(nicu23, location = full_address, output = "latlona")
+
+#subsetting Japan from 96 and 11
+nicu96.geo <- nicu96.geo[-13, ]
+nicu11.geo <- nicu11.geo[-16, ]
+
+```
+
+```{r}
+
+#checking to make sure all points are in the USA
+mapview(nicu96.geo, xcol = "lon", ycol = "lat", crs = 4269, grid = FALSE)
+mapview(nicu11.geo, xcol = "lon", ycol = "lat", crs = 4269, grid = FALSE)
+mapview(nicu23.geo, xcol = "lon", ycol = "lat", crs = 4269, grid = FALSE)
+
+```
+
+
+```{r}
+
+#Fixing lat long errors in 11
+
+#beth isreal 
+nicu11.geo[639,"lon"] <- -73.98153
+nicu11.geo[639,"lat"] <- 40.73279
+
+
+```
+
+
+```{r}
+
+#Turn our NICU coordinates into point feture class using st_as_sf 
+nicu96_pts <- st_as_sf(nicu96.geo, coords = c("lon", "lat"), crs = 4326)
+nicu11_pts <- st_as_sf(nicu11.geo, coords = c("lon", "lat"), crs = 4326)
+nicu23_pts <- st_as_sf(nicu23.geo, coords = c("lon", "lat"), crs = 4326)
+
+#Change point projections to NAD 83
+nicu96_pts <- st_transform(nicu96_pts, crs = "ESRI:102003")
+nicu11_pts <- st_transform(nicu11_pts, crs = "ESRI:102003")
+nicu23_pts <- st_transform(nicu23_pts, crs = "ESRI:102003")
+
+#Bring in USA county file 
+cnty <- counties(state = NULL)
+#Change cnty polygons to NAD83 
+cnty <- st_transform(cnty, crs = "ESRI:102003")
+
+# Fix invalid geometries
+cnty <- st_make_valid(cnty)
+```
+
+
+```{r}
+
+#join county file df to nicu_pts df to get county information 
+nicu96_pts <- st_join(nicu96_pts, cnty)
+nicu11_pts <- st_join(nicu11_pts, cnty)
+nicu23_pts <- st_join(nicu23_pts, cnty)
+
+
+#find intersection of points and polygons 
+intersections96 <- st_intersection(nicu96_pts, cnty)
+intersections11 <- st_intersection(nicu11_pts, cnty)
+intersections23 <- st_intersection(nicu23_pts, cnty)
+
+#group by county and count number of points to serve as fill for map
+county_points96 <- intersections96 %>%
+  group_by(GEOID) %>%
+  summarize(nicu_count = n())
+
+county_points11 <- intersections11 %>%
+  group_by(GEOID) %>%
+  summarize(nicu_count = n())
+
+county_points23 <- intersections23 %>%
+  group_by(GEOID) %>%
+  summarize(nicu_count = n())
+
+
+#make county counts non-spatial (losing point geometry so we can join and get county level geometry instead)
+county_points96 <- county_points96 %>% dplyr::select(GEOID, nicu_count)
+st_geometry(county_points96) <- NULL
+
+county_points11 <- county_points11 %>% dplyr::select(GEOID, nicu_count)
+st_geometry(county_points11) <- NULL
+
+county_points23 <- county_points23 %>% dplyr::select(GEOID, nicu_count)
+st_geometry(county_points23) <- NULL
+
+
+#join point counts to county shapefile to get NICU count by county 
+cnty96 <- left_join(cnty, county_points96, by = "GEOID")
+cnty11 <- left_join(cnty, county_points11, by = "GEOID")
+cnty23 <- left_join(cnty, county_points23, by = "GEOID")
+
+```
+
+
+```{r Cats}
+
+#creating categories/levels of NICU data to be able to map based on a categorical variable instead of continous
+
+#96
+cnty96 <- cnty96 %>% mutate(nicu_cat = case_when(nicu_count<1 ~ 0,
+                                             nicu_count==1 ~ 1,
+                                             nicu_count==2 ~ 2,
+                                             nicu_count==3 | nicu_count==4 | nicu_count==5 ~ 3,
+                                             nicu_count>5 & nicu_count<11 ~4,
+                                             nicu_count>10 ~ 5))
+ 
+cnty96$nicu_cat <- factor(cnty96$nicu_cat, levels=c(0,1,2,3,4,5), labels=c("0", "1", "2", "3-5", "6-10", "11+"))
+
+
+#11
+cnty11 <- cnty11 %>% mutate(nicu_cat = case_when(nicu_count<1 ~ 0,
+                                             nicu_count==1 ~ 1,
+                                             nicu_count==2 ~ 2,
+                                             nicu_count==3 | nicu_count==4 | nicu_count==5 ~ 3,
+                                             nicu_count>5 & nicu_count<11 ~4,
+                                             nicu_count>10 ~ 5))
+ 
+cnty11$nicu_cat <- factor(cnty11$nicu_cat, levels=c(0,1,2,3,4,5), labels=c("0", "1", "2", "3-5", "6-10", "11+"))
+
+
+
+#23
+cnty23 <- cnty23 %>% mutate(nicu_cat = case_when(nicu_count<1 ~ 0,
+                                             nicu_count==1 ~ 1,
+                                             nicu_count==2 ~ 2,
+                                             nicu_count==3 | nicu_count==4 | nicu_count==5 ~ 3,
+                                             nicu_count>5 & nicu_count<11 ~4,
+                                             nicu_count>10 ~ 5))
+ 
+cnty23$nicu_cat <- factor(cnty23$nicu_cat, levels=c(0,1,2,3,4,5), labels=c("0", "1", "2", "3-5", "6-10", "11+"))
+```
+
+
+```{r}
+
+#mapping individual yearly NICU count informational 
+
+#1996 ---------------------------------------------------------------------------------------------------------------------------
+CONUS_nicus96 <- cnty96 %>%  ggplot() + 
+  geom_sf(data = cnty96 %>% filter(!STATEFP %in% c("02", "15", "72", "78", "69", "60", "66")), aes(fill = nicu_cat)) +
+  scale_fill_brewer("Count of NICUs", palette = "YlGnBu") +
+  #geom_sf(data = statebs, aes(fill = NA), color = "black", size = 1) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "left", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))+
+   labs(title = "USA NICUs 1996")
+CONUS_nicus96
+
+
+#2011 ---------------------------------------------------------------------------------------------------------------------------
+CONUS_nicus11 <- cnty11 %>%  ggplot() + 
+  geom_sf(data = cnty11 %>% filter(!STATEFP %in% c("02", "15", "72", "78", "69", "60", "66")), aes(fill = nicu_cat)) +
+  scale_fill_brewer("Count of NICUs", palette = "YlGnBu") +
+  #geom_sf(data = statebs, aes(fill = NA), color = "black", size = 1) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "left", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))+
+   labs(title = "USA NICUs 2011")
+CONUS_nicus11
+
+
+#2023 ---------------------------------------------------------------------------------------------------------------------------
+CONUS_nicus23 <- cnty23 %>%  ggplot() + 
+  geom_sf(data = cnty23 %>% filter(!STATEFP %in% c("02", "15", "72", "78", "69", "60", "66")), aes(fill = nicu_cat)) +
+  scale_fill_brewer("Count of NICUs", palette = "YlGnBu") +
+  #geom_sf(data = statebs, aes(fill = NA), color = "black", size = 1) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "left", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))+
+        labs(title = "USA NICUs 2023")
+CONUS_nicus23
+
+```
+
+
+```{r}
+
+#change col names in cnty to be unique for when we join 
+cnty96 <- cnty96 %>% rename("nicu_count_96" = "nicu_count")
+cnty11 <- cnty11 %>% rename("nicu_count_11" = "nicu_count")
+cnty23 <- cnty23 %>% rename("nicu_count_23" = "nicu_count")
+
+#creating a simple df with only  GEOID col and nicu_pts  
+lazy_cnty96 <- select(cnty96, c("GEOID", "nicu_count_96"))
+lazy_cnty11 <- select(cnty11, c("GEOID", "nicu_count_11"))
+lazy_cnty23 <- select(cnty23, c("GEOID", "nicu_count_23"))
+
+#drop geometry for simple df 
+lazy_cnty96 <- lazy_cnty96 %>% dplyr::select(GEOID, nicu_count_96)
+st_geometry(lazy_cnty96) <- NULL
+lazy_cnty11 <- lazy_cnty11 %>% dplyr::select(GEOID, nicu_count_11)
+st_geometry(lazy_cnty11) <- NULL
+lazy_cnty23 <- lazy_cnty23 %>% dplyr::select(GEOID, nicu_count_23)
+st_geometry(lazy_cnty23) <- NULL
+
+#Merge count dfs together: complete county list (3234 counties in US) with nicu count per ocunty
+nicus2311 <- merge(lazy_cnty23, lazy_cnty11, by = "GEOID")
+nicus231196 <- merge(nicus2311, lazy_cnty96, by = "GEOID")
+
+#join full NICU county information to county information to get county polygons
+cntyallcount <- left_join(cnty, nicus231196, by = "GEOID")
+
+```
+
+
+```{r}
+
+#goals: map changes in number of NICUs per county
+# 1996-2011 
+# 2011-2023
+# 1996-2023 
+
+#legend cats 
+# No NICU ever 
+# No change 
+# Number change (+ or -)
+
+# cntyallcount <- cntyallcount %>% 
+#     mutate_at(c('nicu_count_96','nicu_count_11', 'nicu_count_23'), ~replace_na(.,0))
+
+#subtracting counts to get differences in NICUs
+cntyallcount$change96to11 <- (cntyallcount$nicu_count_11 - cntyallcount$nicu_count_96)
+cntyallcount$change11to23 <- (cntyallcount$nicu_count_23 - cntyallcount$nicu_count_11)
+cntyallcount$change96to23 <- (cntyallcount$nicu_count_23 - cntyallcount$nicu_count_96)
+
+#adding row numbers to be able to easily make changes
+cntyallcount$row_num <- seq.int(nrow(cntyallcount))
+
+
+```
+
+```{r}
+
+#creating a "raw" changes file so that we can easily check where errors are in the "changes" columns to be able to make specific line edits 
+
+#drop geometry 
+raw_changes_nicu <- st_drop_geometry(cntyallcount) 
+
+#save and review the changes 
+write.csv(raw_changes_nicu, "raw_changes_nicu.csv")
+
+#create a logical vector to identify rows with all NAs in the specified columns
+remove_rows <- apply(raw_changes_nicu[, c("nicu_count_96", "nicu_count_11", "nicu_count_23", "change96to11", "change11to23", "change96to23")], 1, function(x) all(is.na(x)))
+
+# subset the data frame to keep rows that are not marked for removal
+raw_changes_nicu_no_na <- raw_changes_nicu[!remove_rows, ]
+
+write.csv(raw_changes_nicu_no_na, "raw_changes_nicu_no_na.csv")
+
+```
+
+
+```{r}
+
+#making individual edits to the changes columns
+
+#Since a NA in the df was not recognized as a number, the simple subtraction code does not address the get us the detailed information we need. 
+
+#If we changed all NAs to 0 instead we would not be able to determine when there were no NICUs/never any NICUs because a 0 means that there was no change in NICUs. So using the csv created raw_changes (which was subsetted to only rows with at least one NA in them we manually checked for changes and edited the df)
+
+cntyallcount[15,"change11to23"] <- -1
+cntyallcount[15,"change96to23"] <- -1
+
+cntyallcount[27,"change11to23"] <- -1
+cntyallcount[27,"change96to23"] <- -1
+
+cntyallcount[50,"change96to11"] <- 1
+cntyallcount[50,"change96to23"] <- 1
+
+cntyallcount[60,"change96to11"] <- 1
+cntyallcount[60,"change96to23"] <- 1
+
+cntyallcount[72,"change11to23"] <- 2
+cntyallcount[72,"change96to23"] <- 2
+
+cntyallcount[80,"change11to23"] <- 1
+cntyallcount[80,"change96to23"] <- 1
+
+cntyallcount[83,"change96to11"] <- 1
+cntyallcount[83,"change96to23"] <- 1
+
+cntyallcount[90,"change11to23"] <- 1
+cntyallcount[90,"change96to23"] <- 1
+
+cntyallcount[101,"change11to23"] <- 1
+cntyallcount[101,"change96to23"] <- 1
+
+cntyallcount[112,"change11to23"] <- 1
+cntyallcount[112,"change96to23"] <- 1
+
+cntyallcount[125,"change11to23"] <- 1
+cntyallcount[125,"change96to23"] <- 1
+
+cntyallcount[145,"change11to23"] <- 1
+cntyallcount[145,"change96to23"] <- 1
+
+cntyallcount[149,"change11to23"] <- 2
+cntyallcount[149,"change96to23"] <- 2
+
+cntyallcount[513,"change96to11"] <- -1
+cntyallcount[513,"change11to23"] <- 1
+
+cntyallcount[911,"change11to23"] <- -1
+cntyallcount[911,"change96to23"] <- -1
+
+cntyallcount[975,"change11to23"] <- -2
+cntyallcount[975,"change96to23"] <- -1
+
+cntyallcount[1206,"change11to23"] <- -1
+cntyallcount[1206,"change96to23"] <- -1
+
+cntyallcount[1242,"change96to11"] <- -1
+cntyallcount[1242,"change11to23"] <- 1
+
+cntyallcount[1244,"change96to11"] <- -1
+cntyallcount[1244,"change96to23"] <- -1
+
+cntyallcount[1390,"change11to23"] <- -1
+cntyallcount[1390,"change96to23"] <- -1
+
+cntyallcount[1404,"change96to11"] <- -1
+cntyallcount[1404,"change96to23"] <- -1
+
+cntyallcount[1995,"change96to11"] <- -1
+cntyallcount[1995,"change96to23"] <- -1
+
+cntyallcount[2091,"change96to11"] <- -1
+cntyallcount[2091,"change11to23"] <- 1
+
+cntyallcount[2176,"change96to11"] <- -1
+cntyallcount[2176,"change96to23"] <- -1
+
+cntyallcount[2250,"change96to11"] <- -1
+cntyallcount[2250,"change96to23"] <- -1
+
+cntyallcount[2318,"change96to11"] <- -1
+cntyallcount[2318,"change96to23"] <- -1
+
+cntyallcount[2460,"change96to11"] <- -1
+cntyallcount[2460,"change96to23"] <- -1
+
+cntyallcount[2549,"change96to11"] <- -1
+cntyallcount[2549,"change96to23"] <- -1
+
+cntyallcount[2561,"change96to11"] <- -1
+cntyallcount[2561,"change96to23"] <- -1
+
+cntyallcount[3192,"change11to23"] <- -1
+cntyallcount[3192,"change96to23"] <- -1
+
+cntyallcount[383,"change11to23"] <- -3
+cntyallcount[383,"change96to23"] <- -4
+
+cntyallcount[151,"change11to23"] <- 1
+cntyallcount[151,"change96to23"] <- 1
+
+cntyallcount[166,"change11to23"] <- 1
+cntyallcount[166,"change96to23"] <- 1
+
+cntyallcount[168,"change96to11"] <- 2
+cntyallcount[168,"change96to23"] <- 2
+
+cntyallcount[170,"change96to11"] <- 1
+cntyallcount[170,"change96to23"] <- 1
+
+cntyallcount[192,"change11to23"] <- 1
+cntyallcount[192,"change96to23"] <- 1
+
+cntyallcount[215,"change11to23"] <- 1
+cntyallcount[215,"change96to23"] <- 1
+
+cntyallcount[220,"change11to23"] <- 1
+cntyallcount[220,"change96to23"] <- 1
+
+cntyallcount[230,"change11to23"] <- 1
+cntyallcount[230,"change96to23"] <- 1
+
+cntyallcount[231,"change11to23"] <- 1
+cntyallcount[231,"change96to23"] <- 1
+
+cntyallcount[235,"change96to11"] <- 1
+cntyallcount[235,"change96to23"] <- 1
+
+cntyallcount[236,"change96to11"] <- 1
+cntyallcount[236,"change96to23"] <- 1
+
+cntyallcount[242,"change11to23"] <- 1
+cntyallcount[242,"change96to23"] <- 1
+
+cntyallcount[245,"change11to23"] <- 1
+cntyallcount[245,"change96to23"] <- 1
+
+cntyallcount[251,"change96to11"] <- 1
+cntyallcount[251,"change96to23"] <- 2
+
+cntyallcount[270,"change96to11"] <- 1
+cntyallcount[270,"change96to23"] <- 1
+
+cntyallcount[273,"change11to23"] <- 1
+cntyallcount[273,"change96to23"] <- 1
+
+cntyallcount[287,"change11to23"] <- 1
+cntyallcount[287,"change96to23"] <- 1
+
+cntyallcount[294,"change11to23"] <- 1
+cntyallcount[294,"change96to23"] <- 1
+
+cntyallcount[298,"change11to23"] <- 1
+cntyallcount[298,"change96to23"] <- 1
+
+cntyallcount[303,"change96to11"] <- 1
+cntyallcount[303,"change96to23"] <- 1
+
+cntyallcount[315,"change11to23"] <- 1
+cntyallcount[315,"change96to23"] <- 1
+
+cntyallcount[337,"change11to23"] <- 1
+cntyallcount[337,"change96to23"] <- 1
+
+cntyallcount[354,"change11to23"] <- 1
+cntyallcount[354,"change96to23"] <- 1
+
+cntyallcount[363,"change11to23"] <- 1
+cntyallcount[363,"change96to23"] <- 1
+
+cntyallcount[375,"change96to11"] <- 1
+cntyallcount[375,"change96to23"] <- 1
+
+cntyallcount[377,"change96to11"] <- 1
+cntyallcount[377,"change96to23"] <- 2
+
+cntyallcount[399,"change96to11"] <- 1
+cntyallcount[399,"change96to23"] <- 1
+
+cntyallcount[406,"change11to23"] <- 2
+cntyallcount[406,"change96to23"] <- 2
+
+cntyallcount[433,"change96to11"] <- 1
+cntyallcount[433,"change96to23"] <- 1
+
+cntyallcount[434,"change11to23"] <- 1
+cntyallcount[434,"change96to23"] <- 1
+
+cntyallcount[439,"change96to11"] <- 2
+cntyallcount[439,"change96to23"] <- 4
+
+cntyallcount[444,"change11to23"] <- 1
+cntyallcount[444,"change96to23"] <- 1
+
+cntyallcount[450,"change11to23"] <- 1
+cntyallcount[450,"change96to23"] <- 1
+
+cntyallcount[548,"change96to11"] <- 1
+cntyallcount[548,"change96to23"] <- 1
+
+cntyallcount[471,"change11to23"] <- 2
+cntyallcount[471,"change96to23"] <- 2
+
+cntyallcount[488,"change96to11"] <- 1
+cntyallcount[488,"change11to23"] <- -1
+cntyallcount[488,"change96to23"] <- 0
+
+cntyallcount[510,"change96to11"] <- 1
+cntyallcount[510,"change11to23"] <- -1
+cntyallcount[510,"change96to23"] <- 0
+
+cntyallcount[523,"change11to23"] <- 1
+cntyallcount[523,"change96to23"] <- 1
+
+cntyallcount[532,"change11to23"] <- 1
+cntyallcount[532,"change96to23"] <- 1
+
+cntyallcount[539,"change11to23"] <- 1
+cntyallcount[539,"change96to23"] <- 1
+
+cntyallcount[547,"change11to23"] <- 1
+cntyallcount[547,"change96to23"] <- 1
+
+cntyallcount[553,"change96to11"] <- 1
+cntyallcount[553,"change96to23"] <- 2
+
+cntyallcount[561,"change11to23"] <- 1
+cntyallcount[561,"change96to23"] <- 1
+
+cntyallcount[569,"change11to23"] <- 2
+cntyallcount[569,"change96to23"] <-2
+
+cntyallcount[571,"change11to23"] <- 1
+cntyallcount[571,"change96to23"] <- 1
+
+cntyallcount[578,"change96to11"] <- 1
+cntyallcount[578,"change96to23"] <- 1
+
+cntyallcount[580,"change96to11"] <- 1
+cntyallcount[580,"change96to23"] <- 3
+
+cntyallcount[594,"change11to23"] <- 2
+cntyallcount[594,"change96to23"] <- 2
+
+cntyallcount[603,"change96to11"] <- 1
+cntyallcount[603,"change11to23"] <- -1
+cntyallcount[603,"change96to23"] <- 0
+
+cntyallcount[604,"change11to23"] <- 1
+cntyallcount[604,"change96to23"] <- 1
+
+cntyallcount[618,"change11to23"] <- 5
+cntyallcount[618,"change96to23"] <- 5
+
+cntyallcount[635,"change11to23"] <- 2
+cntyallcount[635,"change96to23"] <- 2
+
+cntyallcount[636,"change11to23"] <- 1
+cntyallcount[636,"change96to23"] <- 1
+
+cntyallcount[644,"change11to23"] <- 1
+cntyallcount[644,"change96to23"] <- 1
+
+cntyallcount[651,"change11to23"] <- 1
+cntyallcount[651,"change96to23"] <- 1
+
+cntyallcount[689,"change96to11"] <- 1
+cntyallcount[689,"change96to23"] <- 1
+
+cntyallcount[703,"change11to23"] <- 1
+cntyallcount[703,"change96to23"] <- 1
+
+cntyallcount[704,"change11to23"] <- 1
+cntyallcount[704,"change96to23"] <- 1
+
+cntyallcount[744,"change96to11"] <- 1
+cntyallcount[744,"change96to23"] <- 1
+
+cntyallcount[750,"change11to23"] <- 2
+cntyallcount[750,"change96to23"] <- 2
+
+cntyallcount[754,"change11to23"] <- 1
+cntyallcount[754,"change96to23"] <- 1
+
+cntyallcount[759,"change11to23"] <- 1
+cntyallcount[759,"change96to23"] <- 1
+
+cntyallcount[760,"change96to11"] <- 1
+cntyallcount[760,"change96to23"] <- 1
+
+cntyallcount[794,"change11to23"] <- 1
+cntyallcount[794,"change96to23"] <- 1
+
+cntyallcount[804,"change96to11"] <- 2
+cntyallcount[804,"change96to23"] <- 2
+
+cntyallcount[809,"change11to23"] <- 1
+cntyallcount[809,"change96to23"] <- 1
+
+cntyallcount[817,"change11to23"] <- 1
+cntyallcount[817,"change96to23"] <- 1
+
+cntyallcount[880,"change11to23"] <- 1
+cntyallcount[880,"change96to23"] <- 1
+
+cntyallcount[902,"change96to11"] <- 1
+cntyallcount[902,"change96to23"] <- 1
+
+cntyallcount[942,"change96to11"] <- 1
+cntyallcount[942,"change96to23"] <- 2
+
+cntyallcount[949,"change11to23"] <- 1
+cntyallcount[949,"change96to23"] <- 1
+
+cntyallcount[954,"change96to11"] <- 2
+cntyallcount[954,"change96to23"] <- 2
+
+cntyallcount[964,"change11to23"] <- 1
+cntyallcount[964,"change96to23"] <- 1
+
+cntyallcount[970,"change11to23"] <- 1
+cntyallcount[970,"change96to23"] <- 1
+
+cntyallcount[974,"change11to23"] <- 1
+cntyallcount[974,"change96to23"] <- 1
+
+cntyallcount[978,"change11to23"] <- 1
+cntyallcount[978,"change96to23"] <- 1
+
+cntyallcount[986,"change11to23"] <- 1
+cntyallcount[986,"change96to23"] <- 1
+
+cntyallcount[1004,"change11to23"] <- 1
+cntyallcount[1004,"change96to23"] <- 1
+
+cntyallcount[1007,"change11to23"] <- 1
+cntyallcount[1007,"change96to23"] <- 1
+
+cntyallcount[1014,"change11to23"] <- 1
+cntyallcount[1014,"change96to23"] <- 1
+
+cntyallcount[1046,"change96to11"] <- 1
+cntyallcount[1046,"change96to23"] <- 1
+
+cntyallcount[1046,"change11to23"] <- 3
+cntyallcount[1046,"change96to23"] <- 3
+
+cntyallcount[1055,"change96to11"] <- 1
+cntyallcount[1055,"change96to23"] <- 1
+
+cntyallcount[1055,"change11to23"] <- 2
+cntyallcount[1055,"change96to23"] <- 2
+
+cntyallcount[1056,"change11to23"] <- 1
+cntyallcount[1056,"change96to23"] <- 1
+
+cntyallcount[1061,"change11to23"] <- 1
+cntyallcount[1061,"change96to23"] <- 1
+
+cntyallcount[1063,"change96to11"] <- 1
+cntyallcount[1063,"change96to23"] <- 1
+
+cntyallcount[1071,"change11to23"] <- 1
+cntyallcount[1071,"change96to23"] <- 1
+
+cntyallcount[1092,"change11to23"] <- 1
+cntyallcount[1092,"change96to23"] <- 1
+
+cntyallcount[1096,"change11to23"] <- 1
+cntyallcount[1096,"change96to23"] <- 1
+
+cntyallcount[1127,"change11to23"] <- 1
+cntyallcount[1127,"change96to23"] <- 1
+
+cntyallcount[1155,"change11to23"] <- 1
+cntyallcount[1155,"change96to23"] <- 1
+
+cntyallcount[1158,"change11to23"] <- 1
+cntyallcount[1158,"change96to23"] <- 1
+
+cntyallcount[1161,"change11to23"] <- 1
+cntyallcount[1161,"change96to23"] <- 1
+
+cntyallcount[1164,"change11to23"] <- 1
+cntyallcount[1164,"change96to23"] <- 1
+
+cntyallcount[1170,"change11to23"] <- 1
+cntyallcount[1170,"change96to23"] <- 1
+
+cntyallcount[1180,"change11to23"] <- 1
+cntyallcount[1180,"change96to23"] <- 1
+
+cntyallcount[1185,"change11to23"] <- 1
+cntyallcount[1185,"change96to23"] <- 1
+
+cntyallcount[1195,"change96to11"] <- 2
+cntyallcount[1195,"change96to23"] <- 2
+
+cntyallcount[1210,"change11to23"] <- 1
+cntyallcount[1210,"change96to23"] <- 1
+
+cntyallcount[1211,"change11to23"] <- 1
+cntyallcount[1211,"change96to23"] <- 1
+
+cntyallcount[1215,"change96to11"] <- 1
+cntyallcount[1215,"change96to23"] <- 1
+
+cntyallcount[1219,"change96to11"] <- 1
+cntyallcount[1219,"change96to23"] <- 1
+
+cntyallcount[1245,"change11to23"] <- 1
+cntyallcount[1245,"change96to23"] <- 1
+
+cntyallcount[1262,"change11to23"] <- 2
+cntyallcount[1262,"change96to23"] <- 2
+
+cntyallcount[1263,"change11to23"] <- 1
+cntyallcount[1263,"change96to23"] <- 1
+
+cntyallcount[1269,"change96to11"] <- 1
+cntyallcount[1269,"change96to23"] <- 1
+
+cntyallcount[1288,"change11to23"] <- 1
+cntyallcount[1288,"change96to23"] <- 1
+
+cntyallcount[1298,"change96to11"] <- 1
+cntyallcount[1298,"change11to23"] <- -1
+cntyallcount[1298,"change96to23"] <- 0
+
+cntyallcount[1302,"change11to23"] <- 1
+cntyallcount[1302,"change96to23"] <- 1
+
+cntyallcount[1307,"change96to11"] <- 1
+cntyallcount[1307,"change96to23"] <- 2
+
+cntyallcount[1309,"change11to23"] <- 1
+cntyallcount[1309,"change96to23"] <- 1
+
+cntyallcount[1340,"change11to23"] <- 2
+cntyallcount[1340,"change96to23"] <- 2
+
+cntyallcount[1352,"change96to11"] <- 1
+cntyallcount[1352,"change96to23"] <- 2
+
+cntyallcount[1359,"change11to23"] <- 1
+cntyallcount[1359,"change96to23"] <- 1
+
+cntyallcount[1378,"change11to23"] <- 1
+cntyallcount[1378,"change96to23"] <- 1
+
+cntyallcount[1418,"change11to23"] <- 1
+cntyallcount[1418,"change96to23"] <- 1
+
+cntyallcount[1433,"change11to23"] <- 1
+cntyallcount[1433,"change96to23"] <- 1
+
+cntyallcount[1434,"change96to11"] <- 1
+cntyallcount[1434,"change96to23"] <- 1
+
+cntyallcount[1445,"change11to23"] <- 1
+cntyallcount[1445,"change96to23"] <- 1
+
+cntyallcount[1450,"change11to23"] <- 1
+cntyallcount[1450,"change96to23"] <- 1
+
+cntyallcount[1461,"change11to23"] <- 1
+cntyallcount[1461,"change96to23"] <- 1
+
+cntyallcount[1477,"change96to11"] <- 1
+cntyallcount[1477,"change96to23"] <- 1
+
+cntyallcount[1479,"change11to23"] <- 3
+cntyallcount[1479,"change96to23"] <- 3
+
+cntyallcount[1483,"change11to23"] <- 1
+cntyallcount[1483,"change96to23"] <- 1
+
+cntyallcount[1493,"change96to11"] <- 1
+cntyallcount[1493,"change96to23"] <- 1
+
+cntyallcount[1500,"change11to23"] <- 1
+cntyallcount[1500,"change96to23"] <- 1
+
+cntyallcount[1508,"change11to23"] <- 1
+cntyallcount[1508,"change96to23"] <- 1
+
+cntyallcount[1517,"change96to11"] <- 1
+cntyallcount[1517,"change96to23"] <- 2
+
+cntyallcount[1524,"change96to11"] <- 1
+cntyallcount[1524,"change96to23"] <- 1
+
+cntyallcount[1545,"change96to11"] <- 1
+cntyallcount[1545,"change96to23"] <- 1
+
+cntyallcount[1566,"change11to23"] <- 1
+cntyallcount[1566,"change96to23"] <- 1
+
+cntyallcount[1586,"change11to23"] <- 1
+cntyallcount[1586,"change96to23"] <- 1
+
+cntyallcount[1588,"change11to23"] <- 1
+cntyallcount[1588,"change96to23"] <- 1
+
+cntyallcount[1592,"change11to23"] <- 1
+cntyallcount[1592,"change96to23"] <- 1
+
+cntyallcount[1604,"change11to23"] <- 1
+cntyallcount[1604,"change96to23"] <- 1
+
+cntyallcount[1609,"change11to23"] <- 1
+cntyallcount[1609,"change96to23"] <- 1
+
+cntyallcount[1612,"change11to23"] <- 1
+cntyallcount[1612,"change96to23"] <- 1
+
+cntyallcount[1622,"change11to23"] <- 1
+cntyallcount[1622,"change96to23"] <- 1
+
+cntyallcount[1624,"change11to23"] <- 1
+cntyallcount[1624,"change96to23"] <- 1
+
+cntyallcount[1629,"change11to23"] <- 1
+cntyallcount[1629,"change96to23"] <- 1
+
+cntyallcount[1643,"change96to11"] <- 1
+cntyallcount[1643,"change96to23"] <- 2
+
+cntyallcount[1652,"change96to11"] <- 1
+cntyallcount[1652,"change96to23"] <- 1
+
+cntyallcount[1666,"change11to23"] <- 1
+cntyallcount[1666,"change96to23"] <- 1
+
+cntyallcount[1667,"change11to23"] <- 1
+cntyallcount[1667,"change96to23"] <- 1
+
+cntyallcount[1670,"change11to23"] <- 1
+cntyallcount[1670,"change96to23"] <- 1
+
+cntyallcount[1671,"change11to23"] <- 1
+cntyallcount[1671,"change96to23"] <- 1
+
+cntyallcount[1674,"change11to23"] <- 1
+cntyallcount[1674,"change96to23"] <- 1
+
+cntyallcount[1682,"change96to11"] <- 1
+cntyallcount[1682,"change11to23"] <- -1
+cntyallcount[1682,"change96to23"] <- 0
+
+cntyallcount[1690,"change11to23"] <- 1
+cntyallcount[1690,"change96to23"] <- 1
+
+cntyallcount[1707,"change96to11"] <- 1
+cntyallcount[1707,"change96to23"] <- 1
+
+cntyallcount[1730,"change96to11"] <- 1
+cntyallcount[1730,"change96to23"] <- 1
+
+cntyallcount[1732,"change96to11"] <- 1
+cntyallcount[1732,"change96to23"] <- 1
+
+cntyallcount[1741,"change11to23"] <- 1
+cntyallcount[1741,"change96to23"] <- 1
+
+cntyallcount[1757,"change11to23"] <- 1
+cntyallcount[1757,"change96to23"] <- 1
+
+cntyallcount[1759,"change96to11"] <- 1
+cntyallcount[1759,"change96to23"] <- 2
+
+cntyallcount[1773,"change11to23"] <- 1
+cntyallcount[1773,"change96to23"] <- 1
+
+cntyallcount[1805,"change11to23"] <- 2
+cntyallcount[1805,"change96to23"] <- 2
+
+cntyallcount[1812,"change96to11"] <- 1
+cntyallcount[1812,"change96to23"] <- 1
+
+cntyallcount[1813,"change11to23"] <- 1
+cntyallcount[1813,"change96to23"] <- 1
+
+cntyallcount[1817,"change96to11"] <- 1
+cntyallcount[1817,"change96to23"] <- 1
+
+cntyallcount[1841,"change11to23"] <- 1
+cntyallcount[1841,"change96to23"] <- 1
+
+cntyallcount[1857,"change96to11"] <- 1
+cntyallcount[1857,"change96to23"] <- 2
+
+cntyallcount[1861,"change96to11"] <- 1
+cntyallcount[1861,"change96to23"] <- 1
+
+cntyallcount[1896,"change11to23"] <- 1
+cntyallcount[1896,"change96to23"] <- 1
+
+cntyallcount[1913,"change11to23"] <- 1
+cntyallcount[1913,"change96to23"] <- 1
+
+cntyallcount[1914,"change96to11"] <- 1
+cntyallcount[1914,"change96to23"] <- 1
+
+cntyallcount[1936,"change96to11"] <- 1
+cntyallcount[1936,"change96to23"] <- 1
+
+cntyallcount[1941,"change96to11"] <- 1
+cntyallcount[1941,"change96to23"] <- 1
+
+cntyallcount[1957,"change11to23"] <- 1
+cntyallcount[1957,"change96to23"] <- 1
+
+cntyallcount[1973,"change11to23"] <- 1
+cntyallcount[1973,"change96to23"] <- 1
+
+cntyallcount[1981,"change96to11"] <- 1
+cntyallcount[1981,"change11to23"] <- -1
+cntyallcount[1981,"change96to23"] <- 0
+
+cntyallcount[1986,"change11to23"] <- 1
+cntyallcount[1986,"change96to23"] <- 1
+
+cntyallcount[2022,"change96to11"] <- 1
+cntyallcount[2022,"change96to23"] <- 1
+
+cntyallcount[2061,"change11to23"] <- 2
+cntyallcount[2061,"change96to23"] <- 2
+
+cntyallcount[2083,"change11to23"] <- 2
+cntyallcount[2083,"change96to23"] <- 2
+
+cntyallcount[2094,"change11to23"] <- 1
+cntyallcount[2094,"change96to23"] <- 1
+
+cntyallcount[2096,"change96to11"] <- 1
+cntyallcount[2096,"change11to23"] <- -1
+cntyallcount[2096,"change96to23"] <- 0
+
+cntyallcount[2102,"change96to11"] <- 1
+cntyallcount[2102,"change96to23"] <- 3
+
+cntyallcount[2123,"change96to11"] <- 1
+cntyallcount[2123,"change96to23"] <- 3
+
+cntyallcount[2132,"change96to11"] <- 1
+cntyallcount[2132,"change96to23"] <- 2
+
+cntyallcount[2149,"change11to23"] <- 3
+cntyallcount[2149,"change96to23"] <- 3
+
+cntyallcount[2152,"change96to11"] <- 1
+cntyallcount[2152,"change96to23"] <- 2
+
+cntyallcount[2173,"change11to23"] <- 1
+cntyallcount[2173,"change96to23"] <- 1
+
+cntyallcount[2209,"change11to23"] <- 2
+cntyallcount[2209,"change96to23"] <- 2
+
+cntyallcount[2216,"change11to23"] <- 1
+cntyallcount[2216,"change96to23"] <- 1
+
+cntyallcount[2217,"change11to23"] <- 1
+cntyallcount[2217,"change96to23"] <- 1
+
+cntyallcount[2244,"change11to23"] <- 1
+cntyallcount[2244,"change96to23"] <- 1
+
+cntyallcount[2277,"change11to23"] <- 1
+cntyallcount[2277,"change96to23"] <- 1
+
+cntyallcount[2280,"change96to11"] <- 3
+cntyallcount[2280,"change96to23"] <- 3
+
+cntyallcount[2301,"change11to23"] <- 1
+cntyallcount[2301,"change96to23"] <- 1
+
+cntyallcount[2313,"change96to11"] <- 1
+cntyallcount[2313,"change96to23"] <- 1
+
+cntyallcount[2314,"change11to23"] <- 1
+cntyallcount[2314,"change96to23"] <- 1
+
+cntyallcount[2360,"change96to11"] <- 1
+cntyallcount[2360,"change96to23"] <- 1
+
+cntyallcount[2363,"change96to11"] <- 1
+cntyallcount[2363,"change96to23"] <- 1
+
+cntyallcount[2406,"change11to23"] <- 1
+cntyallcount[2406,"change96to23"] <- 1
+
+cntyallcount[2414,"change11to23"] <- 1
+cntyallcount[2414,"change96to23"] <- 1
+
+cntyallcount[2435,"change96to11"] <- 1
+cntyallcount[2435,"change96to23"] <- 1
+
+cntyallcount[2443,"change96to11"] <- 1
+cntyallcount[2443,"change96to23"] <- 2
+
+cntyallcount[2447,"change11to23"] <- 3
+cntyallcount[2447,"change96to23"] <- 3
+
+cntyallcount[2449,"change11to23"] <- 1
+cntyallcount[2449,"change96to23"] <- 1
+
+cntyallcount[2467,"change96to11"] <- 1
+cntyallcount[2467,"change96to23"] <- 1
+
+cntyallcount[2468,"change11to23"] <- 1
+cntyallcount[2468,"change96to23"] <- 1
+
+cntyallcount[2469,"change11to23"] <- 1
+cntyallcount[2469,"change96to23"] <- 1
+
+cntyallcount[2474,"change11to23"] <- 3
+cntyallcount[2474,"change96to23"] <- 3
+
+cntyallcount[2494,"change96to11"] <- 2
+cntyallcount[2494,"change96to23"] <- 2
+
+cntyallcount[2515,"change11to23"] <- 1
+cntyallcount[2515,"change96to23"] <- 1
+
+cntyallcount[2536,"change96to11"] <- 1
+cntyallcount[2536,"change96to23"] <- 1
+
+cntyallcount[2538,"change11to23"] <- 1
+cntyallcount[2538,"change96to23"] <- 1
+
+cntyallcount[2543,"change11to23"] <- 1
+cntyallcount[2543,"change96to23"] <- 1
+
+cntyallcount[2551,"change11to23"] <- 1
+cntyallcount[2551,"change96to23"] <- 1
+
+cntyallcount[2558,"change96to11"] <- 1
+cntyallcount[2558,"change96to23"] <- 1
+
+cntyallcount[2567,"change96to11"] <- 1
+cntyallcount[2567,"change96to23"] <- 1
+
+cntyallcount[2567,"change96to11"] <- 1
+cntyallcount[2567,"change11to23"] <- -1
+cntyallcount[2567,"change96to23"] <- 0
+
+cntyallcount[2629,"change11to23"] <- 2
+cntyallcount[2629,"change96to23"] <- 2
+
+cntyallcount[2654,"change96to11"] <- 1
+cntyallcount[2654,"change96to23"] <- 2
+
+cntyallcount[2693,"change11to23"] <- 1
+cntyallcount[2693,"change96to23"] <- 1
+
+cntyallcount[2703,"change11to23"] <- 1
+cntyallcount[2703,"change96to23"] <- 1
+
+cntyallcount[2743,"change11to23"] <- 1
+cntyallcount[2743,"change96to23"] <- 1
+
+cntyallcount[2762,"change11to23"] <- 1
+cntyallcount[2762,"change96to23"] <- 1
+
+cntyallcount[2768,"change11to23"] <- 1
+cntyallcount[2768,"change96to23"] <- 1
+
+cntyallcount[2777,"change96to11"] <- 2
+cntyallcount[2777,"change96to23"] <- 2
+
+cntyallcount[2789,"change11to23"] <- 1
+cntyallcount[2789,"change96to23"] <- 1
+
+cntyallcount[2792,"change11to23"] <- 1
+cntyallcount[2792,"change96to23"] <- 1
+
+cntyallcount[2801,"change96to11"] <- 1
+cntyallcount[2801,"change96to23"] <- 4
+
+cntyallcount[2825,"change11to23"] <- 1
+cntyallcount[2825,"change96to23"] <- 1
+
+cntyallcount[2833,"change11to23"] <- 1
+cntyallcount[2833,"change96to23"] <- 1
+
+cntyallcount[2835,"change96to11"] <- 1
+cntyallcount[2835,"change96to23"] <- 2
+
+cntyallcount[2836,"change96to11"] <- 1
+cntyallcount[2836,"change96to23"] <- 2
+
+cntyallcount[2881,"change96to11"] <- 3
+cntyallcount[2881,"change96to23"] <- 2
+
+cntyallcount[2896,"change11to23"] <- 1
+cntyallcount[2896,"change96to23"] <- 1
+
+cntyallcount[2900,"change11to23"] <- 1
+cntyallcount[2900,"change96to23"] <- 1
+
+cntyallcount[2901,"change11to23"] <- 2
+cntyallcount[2091,"change96to23"] <- 2
+
+cntyallcount[2961,"change96to11"] <- 1
+cntyallcount[2961,"change96to23"] <- 1
+
+cntyallcount[2967,"change11to23"] <- 1
+cntyallcount[2967,"change96to23"] <- 1
+
+cntyallcount[2970,"change96to11"] <- 1
+cntyallcount[2970,"change96to23"] <- 2
+
+cntyallcount[2975,"change11to23"] <- 1
+cntyallcount[2975,"change96to23"] <- 1
+
+cntyallcount[2977,"change11to23"] <- 1
+cntyallcount[2977,"change96to23"] <- 1
+
+cntyallcount[2997,"change11to23"] <- 1
+cntyallcount[2997,"change96to23"] <- 1
+
+cntyallcount[3010,"change11to23"] <- 1
+cntyallcount[3010,"change96to23"] <- 1
+
+cntyallcount[3017,"change96to11"] <- 2
+cntyallcount[3017,"change96to23"] <- 2
+
+cntyallcount[3021,"change11to23"] <- 1
+cntyallcount[3021,"change96to23"] <- 1
+
+cntyallcount[3022,"change11to23"] <- 1
+cntyallcount[3022,"change96to23"] <- 1
+
+cntyallcount[3023,"change11to23"] <- 1
+cntyallcount[3023,"change96to23"] <- 1
+
+cntyallcount[3025,"change11to23"] <- 2
+cntyallcount[3025,"change96to23"] <- 2
+
+cntyallcount[3026,"change96to11"] <- 2
+cntyallcount[3026,"change96to23"] <- 2
+
+cntyallcount[3031,"change96to11"] <- 1
+cntyallcount[3031,"change96to23"] <- 1
+
+cntyallcount[3041,"change96to11"] <- 1
+cntyallcount[3041,"change96to23"] <- 1
+
+cntyallcount[3045,"change11to23"] <- 2
+cntyallcount[3045,"change96to23"] <- 2
+
+cntyallcount[3055,"change11to23"] <- 1
+cntyallcount[3055,"change96to23"] <- 1
+
+cntyallcount[3057,"change11to23"] <- 1
+cntyallcount[3057,"change96to23"] <- 1
+
+cntyallcount[3072,"change96to11"] <- 1
+cntyallcount[3072,"change96to23"] <- 3
+
+cntyallcount[3085,"change96to11"] <- 1
+cntyallcount[3085,"change96to23"] <- 1
+
+cntyallcount[3088,"change96to11"] <- 1
+cntyallcount[3088,"change96to23"] <- 4
+
+cntyallcount[3091,"change11to23"] <- 1
+cntyallcount[3091,"change96to23"] <- 1
+
+cntyallcount[3092,"change11to23"] <- 1
+cntyallcount[3092,"change96to23"] <- 1
+
+cntyallcount[3093,"change11to23"] <- 2
+cntyallcount[3093,"change96to23"] <- 2
+
+cntyallcount[3117,"change11to23"] <- 2
+cntyallcount[3117,"change96to23"] <- 2
+
+cntyallcount[3146,"change11to23"] <- 1
+cntyallcount[3146,"change96to23"] <- 1
+
+cntyallcount[3157,"change11to23"] <- 2
+cntyallcount[3157,"change96to23"] <- 2
+
+cntyallcount[3173,"change96to11"] <- 1
+cntyallcount[3173,"change96to23"] <- 1
+
+cntyallcount[3181,"change96to11"] <- 1
+cntyallcount[3181,"change96to23"] <- 2
+
+cntyallcount[3187,"change11to23"] <- 1
+cntyallcount[3187,"change96to23"] <- 1
+
+cntyallcount[3207,"change11to23"] <- 1
+cntyallcount[3207,"change96to23"] <- 1
+
+cntyallcount[3213,"change96to11"] <- 1
+cntyallcount[3213,"change96to23"] <- 1
+
+cntyallcount[3227,"change11to23"] <- 1
+cntyallcount[3227,"change96to23"] <- 1
+
+```
+
+
+```{r}
+
+#change96to11
+cntyallcount <- cntyallcount %>% mutate(nicu_cat_96_11 = case_when(change96to11 ==NA ~ 0,
+                                             change96to11>= 5 ~ 1,
+                                             change96to11==2 | change96to11==3 | change96to11==4 ~ 2,
+                                             change96to11==1 ~ 3,
+                                             change96to11==0 ~ 4,
+                                             change96to11==-1 ~5,
+                                             change96to11==-2 | change96to11==-3 | change96to11==-4 ~ 6))
+ 
+cntyallcount$nicu_cat_96_11 <- factor(cntyallcount$nicu_cat_96_11, levels=c(0,1,2,3,4,5,6), labels=c("No NICUs Ever", "Increase 5-14", "Increase 2-4", "Increase 1", "No Change", "Decrease 1", "Decrease 2-4"))
+
+
+#change11to23
+cntyallcount <- cntyallcount %>% mutate(nicu_cat_11_23 = case_when(change11to23 ==NA ~ 0,
+                                             change11to23>= 5 ~ 1,
+                                             change11to23==2 | change11to23==3 | change11to23==4 ~ 2,
+                                             change11to23==1 ~ 3,
+                                             change11to23==0 ~ 4,
+                                             change11to23==-1 ~5,
+                                             change11to23==-2 | change11to23==-3 | change11to23==-4 ~ 6))
+ 
+cntyallcount$nicu_cat_11_23 <- factor(cntyallcount$nicu_cat_11_23, levels=c(0,1,2,3,4,5,6), labels=c("No NICUs Ever", "Increase 5-14", "Increase 2-4", "Increase 1", "No Change", "Decrease 1", "Decrease 2-4"))
+
+
+#change96to23
+cntyallcount <- cntyallcount %>% mutate(nicu_cat_96_23 = case_when(change96to23 ==NA ~ 0,
+                                             change96to23>= 5 ~ 1,
+                                             change96to23==2 | change96to23==3 | change96to23==4 ~ 2,
+                                             change96to23==1 ~ 3,
+                                             change96to23==0 ~ 4,
+                                             change96to23==-1 ~5,
+                                             change96to23==-2 | change96to23==-3 | change96to23==-4 ~ 6))
+ 
+cntyallcount$nicu_cat_96_23 <- factor(cntyallcount$nicu_cat_96_23, levels=c(0,1,2,3,4,5,6), labels=c("No NICUs Ever", "Increase 5-14", "Increase 2-4", "Increase 1", "No Change", "Decrease 1", "Decrease 2-4"))
+
+write_csv(cntyallcount, "cntyallcount.csv")
+
+```
+
+```{r}
+
+#BETTER SHAPEFILE FOR HAWAII
+HI_shp <- st_read("2020_Census_County_Boundaries.shp")
+HI_shp$nicu_cat_96_11 <- NA
+HI_shp$nicu_cat_11_23 <- NA
+HI_shp$nicu_cat_96_23 <- NA
+
+HI_shp <- HI_shp %>%
+  mutate(nicu_cat_96_11 = ifelse(geoid20 == "15003", "Decrease 1", nicu_cat_96_11)) %>% 
+  mutate(nicu_cat_11_23 = ifelse(geoid20 == "15003", "No Change", nicu_cat_11_23)) %>% 
+  mutate(nicu_cat_96_23 = ifelse(geoid20 == "15003", "Decrease 1", nicu_cat_96_23))
+
+
+```
+
+
+```{r}
+statebs <- tigris::states() %>% filter(!STATEFP %in% c("02", "15", "72", "78", "69", "60", "66"))
+
+colors need "#A50026" "#D73027" "#F46D43" "#FDAE61" "#FEE090" "#FFFFBF" "#E0F3F8" "#ABD9E9" "#74ADD1" "#4575B4" "#313695"
+
+```
+
+
+```{r}
+#96-11 ---------------------------------------------------------------------------------------------------------------------------------------------------
+CONUS_nicus96_11 <- cntyallcount %>%  ggplot() + 
+  geom_sf(data = cntyallcount %>% filter(!STATEFP %in% c("02", "15", "72", "78", "69", "60", "66")), aes(fill = nicu_cat_96_11), color = "white", size = 0) +
+  scale_fill_brewer("Count of NICUs", palette = "RdYlBu", labels = c("Increase 5-14", "Increase 2-4", "Increase 1", "No Change", "Decrease 1", "Decrease 2-4", "No NICUs"), direction=-1) +
+  geom_sf(data = statebs, aes(fill = NA), color = "black", size = 1) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        #legend.position = c(0.1,0.06), 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(hjust = .5, size = 12))
+CONUS_nicus96_11
+
+#AK
+AK_nicus96_11 <- cntyallcount %>%  ggplot() + 
+  geom_sf(data = cntyallcount %>% filter(STATEFP %in% c("02")), aes(fill = nicu_cat_96_11)) +
+  scale_fill_manual("Count of NICUs", values = c("#FEE090"), na.value="white") +
+  coord_sf(crs = 3338) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))
+AK_nicus96_11
+
+#HI
+HI_nicus96_11 <- HI_shp %>%  ggplot() + 
+  geom_sf(data = HI_shp, aes(fill = nicu_cat_96_11)) +
+  coord_sf(crs = "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs") +
+  scale_fill_manual("Count of NICUs", values = c("#FC8D59"), na.value="white") +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))
+HI_nicus96_11
+
+# #PR
+# PR_nicus96_11 <- cntyallcount %>%  ggplot() + 
+#   geom_sf(data = cntyallcount %>% filter(STATEFP %in% c("72")), aes(fill = nicu_cat_96_11)) +
+#   scale_fill_manual("Count of NICUs", values = c("#FC8D59", "#FEE090"), na.value="white") +
+#   theme(axis.text.x= element_blank(),
+#         axis.text.y= element_blank(),
+#         axis.title.y = element_blank(),
+#         axis.ticks = element_blank(),
+#         rect = element_blank(),
+#         legend.position = "none", 
+#         legend.key.size = unit(.3, 'cm'), 
+#         plot.title = element_text(size = 12))
+# PR_nicus96_11
+
+
+# Create your individual plots
+AK_HI_96_11_plot <- AK_nicus96_11 / HI_nicus96_11
+
+# Define layout with adjusted widths and heights
+full96_11map <- ((CONUS_nicus96_11 | AK_HI_96_11_plot) +
+  plot_layout(widths = c(3, 1), heights = c(1, 1))) +
+  plot_annotation(title = 'Change in Number of NICUs from 1996 to 2011', theme = theme(plot.title = element_text(hjust = .5, size = 30)))
+
+full96_11map
+
+ggsave("full96_11map.png", dpi=300, height=10, width=18, units="in")
+```
+
+
+```{r}
+#11-23 ----------------------------------------------------------------------------------------------------------------------------------------------------
+CONUS_nicus11_23 <- cntyallcount %>%  ggplot() + 
+  geom_sf(data = cntyallcount %>% filter(!STATEFP %in% c("02", "15", "72", "78", "69", "60", "66")), aes(fill = nicu_cat_11_23), color = "white", size = 0) +
+  scale_fill_brewer("Count of NICUs", palette = "RdYlBu", labels = c("Increase 5-14", "Increase 2-4", "Increase 1", "No Change", "Decrease 1", "Decrease 2-4", "No NICUs"), direction=-1) +
+  geom_sf(data = statebs, aes(fill = NA), color = "black", size = 1) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        # legend.position = c(0.1,0.06), 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(hjust = .5, size = 12))
+CONUS_nicus11_23
+
+
+#AK
+AK_nicus11_23 <- cntyallcount %>%  ggplot() + 
+  geom_sf(data = cntyallcount %>% filter(STATEFP %in% c("02")), aes(fill = nicu_cat_11_23)) +
+   scale_fill_manual("Count of NICUs", values = c("#91BFDB", "#E0F3F8"), na.value="white") +
+   coord_sf(crs = 3338) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))
+AK_nicus11_23
+
+#HI
+HI_nicus11_23 <- HI_shp %>%  ggplot() + 
+  geom_sf(data = HI_shp, aes(fill = nicu_cat_11_23)) +
+  coord_sf(crs = "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs") +
+  scale_fill_manual("Count of NICUs", values = c("#FEE090"), na.value="white") +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))
+HI_nicus11_23
+
+# #PR
+# PR_nicus11_23 <- cntyallcount %>%  ggplot() + 
+#   geom_sf(data = cntyallcount %>% filter(STATEFP %in% c("72")), aes(fill = nicu_cat_11_23)) +
+#   scale_fill_brewer("Count of NICUs", palette = "RdYlBu") +
+#   theme(axis.text.x= element_blank(),
+#         axis.text.y= element_blank(),
+#         axis.title.y = element_blank(),
+#         axis.ticks = element_blank(),
+#         rect = element_blank(),
+#         legend.position = "none", 
+#         legend.key.size = unit(.3, 'cm'), 
+#         plot.title = element_text(size = 12))
+# PR_nicus11_23
+
+
+# Create your individual plots
+AK_HI_11_23_plot <- AK_nicus11_23 / HI_nicus11_23
+
+# Define layout with adjusted widths and heights
+full11_23map <- ((CONUS_nicus11_23 | AK_HI_11_23_plot) +
+  plot_layout(widths = c(3, 1), heights = c(1, 1), guides = "collect")) +
+  plot_annotation(title = 'Change in Number of NICUs from 2011 to 2023', theme = theme(plot.title = element_text(hjust = .5, size = 30)))
+
+full11_23map
+
+ggsave("full11_23map.png", dpi=300, height=10, width=18, units="in")
+
+```
+
+
+```{r}
+#96-23 ---------------------------------------------------------------------------------------------------------------------------------------------------
+CONUS_nicus96_23 <- cntyallcount %>%  ggplot() + 
+  geom_sf(data = cntyallcount %>% filter(!STATEFP %in% c("02", "15", "72", "78", "69", "60", "66")), aes(fill = nicu_cat_96_23), color = "white", size = 0) +
+  scale_fill_brewer("Count of NICUs", palette = "RdYlBu", labels = c("Increase 5-14", "Increase 2-4", "Increase 1", "No Change", "Decrease 1", "Decrease 2-4", "No NICUs"), direction=-1) +
+  geom_sf(data = statebs, aes(fill = NA), color = "black", size = 1) +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = c(0.2,0.06), 
+        legend.key.size = unit(.7, 'cm'),
+        legend.direction = "horizontal",
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = .5, size = 12))
+CONUS_nicus96_23
+
+#AK
+AK_nicus96_23 <- cntyallcount %>%  ggplot() + 
+  geom_sf(data = cntyallcount %>% filter(STATEFP %in% c("02")), aes(fill = nicu_cat_96_23)) +
+  coord_sf(crs = 3338) +
+  scale_fill_manual("Count of NICUs", values = c("#91BFDB", "#E0F3F8"), na.value="white") +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))
+AK_nicus96_23
+
+#HI
+HI_nicus96_23 <- HI_shp %>%  ggplot() + 
+  geom_sf(data = HI_shp, aes(fill = nicu_cat_96_23)) +
+  coord_sf(crs = "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs") +
+  scale_fill_manual("Count of NICUs", values = c("#FC8D59"), na.value="white") +
+  theme(axis.text.x= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank(),
+        legend.position = "none", 
+        legend.key.size = unit(.3, 'cm'), 
+        plot.title = element_text(size = 12))
+HI_nicus96_23
+
+# #PR
+# PR_nicus96_23 <- cntyallcount %>%  ggplot() + 
+#   geom_sf(data = cntyallcount %>% filter(STATEFP %in% c("72")), aes(fill = nicu_cat_96_23)) +
+#   scale_fill_brewer("Count of NICUs", palette = "RdYlBu") +
+#   theme(axis.text.x= element_blank(),
+#         axis.text.y= element_blank(),
+#         axis.title.y = element_blank(),
+#         axis.ticks = element_blank(),
+#         rect = element_blank(),
+#         legend.position = "none", 
+#         legend.key.size = unit(.3, 'cm'), 
+#         plot.title = element_text(size = 12))
+# PR_nicus96_23
+
+
+# Create your individual plots
+AK_HI_96_23_plot <- AK_nicus96_23 / HI_nicus96_23
+
+# Define layout with adjusted widths and heights
+full96_23map <- ((CONUS_nicus96_23 | AK_HI_96_23_plot) +
+  plot_layout(widths = c(3, 1), heights = c(1, 1))) +
+  plot_annotation(title = 'Change in Number of NICUs from 1996 to 2023', theme = theme(plot.title = element_text(hjust = .5, size = 30)))
+
+full96_23map
+
+
+ggsave("full96_23map.png", dpi=300, height=10, width=18, units="in")
+
+```
