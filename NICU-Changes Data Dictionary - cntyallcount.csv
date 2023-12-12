@@ -1,0 +1,70 @@
+Variables in cntyallcount df (created within rmd file) ,Definitions
+STATEFP,Current state fips code
+COUNTYFP,Current county fips code 
+COUNTYNS,Current county GNIS code
+GEOID,Geographic entity codes
+NAME,Current county name
+NAMELSAD,"Current name and the translated legal/statistical area
+description for county"
+LSAD,Current legal/statistical area description code for county
+CLASSFP,Current FIPS class code
+MTFCC,MAF/TIGER feature class code (G4020)
+CSAFP,Current combined statistical area code
+CBSAFP,Current metropolitan statistical area/micropolitan statistical area code
+METDIVFP,Current metropolitan division code
+FUNCSTAT,Current functional status
+ALAND,Current land area
+AWATER,Current water area
+INTPTLAT,Current latitude of the internal poin
+INTPTLON,Current longitude of the internal point
+nicu_count_23,Integer count of NICUs in 2023
+nicu_count_11,Integer count of NICUs in 2011
+nicu_count_96,Integer count of NICUs in 1996
+geometry,Feature class shape: polygon
+change96to11,Change in NICUs from 1996 to 2011
+change11to23,Change in NICUs from 2011 to 2023
+change96to23,Change in NICUs from 1996 to 2023
+row_num,Row number serves as unique identifier
+nicu_cat_96_11,Category based on level of change of NICUs from 1996 to 2011
+nicu_cat_11_23,Category based on level of change of NICUs from 2011 to 2023
+nicu_cat_96_23,Category based on level of change of NICUs from 1996 to 2023
+,
+,
+Variables in cleannicus96,
+hosp_num,"Unique identifier for each hospital, simliar to row number"
+hosp_name,Hospital names
+full_address,Full hospital address 
+addr,Hospital street address
+city,Hospital city
+state,Hospital state
+zip,Hospital zip code
+nicu_beds,Number of beds in NICU
+num_neonats,Number of neonatologists at the hospital
+neonat_names,Names of neonatologists at the hospital
+referral,Referral hospital if no or small number of neonatologists
+,
+,
+Variables in cleannicus11,
+hosp_num,"Unique identifier for each hospital, simliar to row number"
+hosp_name,Hospital names
+full_address,Full hospital name
+addr,Hospital street address
+city_state_zip,"Hospital city, state, and zipcode"
+nicu_beds,Number of beds in NICU
+num_neonats,Number of neonatologists at the hospital
+neonat_names,Names of neonatologists at the hospital
+referral,Referral hospital if no or small number of neonatologists
+,
+,
+Variables in cleannicus23,
+nicu,"Unique identifier for each hospital, simliar to row number"
+name,Hospital names
+full_address,Full hospital address 
+addr,Hospital street address
+city,Hospital city
+state,Hospital state
+zip,Hospital zip code
+level,Hospital trauma level
+beds,Number of beds in NICU
+type,Type of care center 
+contact,Main contact for NICU center
