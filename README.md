@@ -8,8 +8,8 @@ Finally, the three final map products are included.
 
 Data Sources:
 
-cleannicu96.csv: raw data from "NICUs and Neonatologist of the USA and Canada 1996 Directory" by American Academy of Pediactrics 
-cleannicu96.csv: raw data from "NICUs and Neonatologist of the USA and Canada 2011 Directory" by American Academy of Pediactrics
-cleannicu23.csv: raw data from The Neonatology Solutions NICU Directory, https://neonatologysolutions.com/nicu-directory/
-County shapefiles: Census 2021 TIGER/Line Shapefiles brought in directly using the tigris package
+cleannicu96.csv: raw data from "NICUs and Neonatologist of the USA and Canada 1996 Directory" by American Academy of Pediactrics, 
+cleannicu96.csv: raw data from "NICUs and Neonatologist of the USA and Canada 2011 Directory" by American Academy of Pediactrics,
+cleannicu23.csv: raw data from The Neonatology Solutions NICU Directory, https://neonatologysolutions.com/nicu-directory/,
+County shapefiles: Census 2021 TIGER/Line Shapefiles brought in directly using the tigris package,
 Hawaii shapefiles: Hawaii Statewide GIS Program https://geoportal.hawaii.gov/datasets/HiStateGIS::2020-census-county-boundaries/about
