@@ -7,6 +7,7 @@ Additionally, the shapefile used for Hawaii is included in zipped format, as the
 Finally, the three final map products are included.
 
 Data Sources:
+
 cleannicu96.csv: raw data from "NICUs and Neonatologist of the USA and Canada 1996 Directory" by American Academy of Pediactrics 
 cleannicu96.csv: raw data from "NICUs and Neonatologist of the USA and Canada 2011 Directory" by American Academy of Pediactrics
 cleannicu23.csv: raw data from The Neonatology Solutions NICU Directory, https://neonatologysolutions.com/nicu-directory/
