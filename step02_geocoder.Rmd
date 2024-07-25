@@ -1,0 +1,178 @@
+---
+title: "Geocoder"
+author: "Amanda Gassett"
+date: "2024-04-23"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1800px !important;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r global_options, echo=FALSE, include=FALSE}
+options(width = 999)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, cache = TRUE, tidy = FALSE)
+```
+
+```{r Libs}
+
+#installing and loading necessary libraries 
+#if(!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+#pacman::p_load(here, folders, readr, dplyr, tidyr, stringr, purrr, lubridate, knitr, snakecase, ggplot2, usmap, ggthemes, cowplot, cdlTools, magrittr, rgdal, spdep, usethis, rlang, tidygeocoder, #mapview, ggmap, sf, ggrepel, tigris, maptools, MetBrewer, maps, tidyverse, RColorBrewer, urbnmapr, tmap, kableExtra, patchwork)
+
+```
+
+
+```{r, echo = FALSE}
+
+# Load libraries
+library(kableExtra)
+library(data.table)
+library(tigris)
+library(sf)
+library(ggplot2)
+library(ggmap)
+
+# Here are all my special functions
+R_scan <- function(char.vec, splitter, component){
+  if (sum(is.na(char.vec[1])) > 0){temp <- NA}
+  else{
+    temp <- rep(NA, length(char.vec))
+    for (i in 1:length(char.vec)){
+      temp[i] <- strsplit(char.vec[i],splitter)[[1]][component]
+    }
+  }
+  temp
+}
+
+clean_string <- function(x){
+  toupper(gsub("[^\u0001-\u007F]+|<U\\+\\w+>", "", x))
+}
+
+standardize_string <- function(x){
+  temp <- toupper(gsub("[^[:alnum:]]", "", x))
+  temp <- gsub("HOSPITAL", "", temp)
+  temp <- gsub("MEDICALCENTER", "", temp)
+  temp
+}
+
+flag_pobox <- function(x){
+  temp <- toupper(gsub("[^[:alnum:]]", "", x))
+  grepl("POBOX", temp)
+}
+
+zpad <- function(x, n){
+  if (sum(nchar(x) < n) > 0){ 
+    x[nchar(x) < n] <- paste0("0",zpad(x[nchar(x) < n], n - 1))
+  }
+  x
+}
+```
+
+## Take cleaned addresses and geocode them
+
+Resolve geocoding warnings from Googe API
+
+### 1996
+
+The corrected 1996 file contains 824 rows; 13 of these are dropped because they are out of area or strongly suggested to represent duplicates (i.e. facilities listed multiple times by different healthcare organizations).
+
+```{r Geocoding Addys 1996, cache = FALSE}
+nicu96 <- read.csv("../cleannicu96_corrected.csv")
+nicu96 <- nicu96[is.na(nicu96$drop) | nicu96$drop != 1,]
+nicu96$hosp_name     <- clean_string(nicu96$hosp_name)
+nicu96$full_address  <- clean_string(nicu96$full_address)
+nicu96$beds          <- strtoi(trimws(R_scan(nicu96$nicu_beds, ":", 2)))
+nicu96$num_drs       <- strtoi(trimws(R_scan(nicu96$num_neonats, ":", 2)))
+nicu96$hosp_id       <- paste0(substr(toupper(gsub("[^[:alnum:]]", "", nicu96$hosp_name)),1,2),
+                               substr(toupper(gsub("[^[:alnum:]]", "", nicu96$addr)),1,3),
+                               "_",nicu96$state,nicu96$zip)
+
+#setting up google api
+#register_google( key="REDACTED", write = TRUE) 
+
+#geocoding addresses using addresses column to map
+#nicu96.geo <- mutate_geocode(nicu96, location = full_address, output = "latlona")
+#write.csv(nicu96.geo, "../cleannicu96_geocoded.csv")
+
+nicu96.geo <- read.csv("../geocode_copy/cleannicu96_geocoded_RESTORED.csv")
+m <- merge(nicu96.geo[,c("hosp_name","full_address","address","lat","lon")],
+           nicu96[,c("hosp_id","full_address","city","state","zip","beds","num_drs","drop","address_changed","notes","imputation")], by = "full_address")
+write.csv(m, "../cleannicu96_geocoded.csv", row.names = FALSE)
+```
+
+### 2011
+
+```{r Geocoding Addys 2011, cache = FALSE, echo = FALSE}
+nicu11 <- read.csv("../cleannicu11_corrected.csv")
+nicu11 <- nicu11[is.na(nicu11$drop) | nicu11$drop != 1,]
+nicu11$hosp_name     <- clean_string(nicu11$hosp_name)
+nicu11$full_address  <- clean_string(nicu11$full_address)
+nicu11$beds    <- strtoi(trimws(R_scan(nicu11$nicu_beds, ":", 2)))
+nicu11$num_drs <- strtoi(substr(nicu11$num_neonats, 16, nchar(nicu11$num_neonats)))
+nicu11$level   <- gsub("1","I",toupper(gsub(";|:|,|8","",R_scan(nicu11$nicu_beds, " ", 2))))
+nicu11$hosp_id       <- paste0(substr(toupper(gsub("[^[:alnum:]]", "", nicu11$hosp_name)),1,5),"_",
+                               substr(toupper(gsub("[^[:alnum:]]", "",R_scan(nicu11$city_state_zip,",",2))),1,7))
+
+
+#nicu11.geo <- mutate_geocode(nicu11, location = full_address, output = "latlona")
+#write.csv(nicu11.geo, "../cleannicu11_geocoded.csv")
+
+nicu11.geo <- read.csv("../geocode_copy/cleannicu11_geocoded.csv")
+m <- merge(nicu11.geo[,c("full_address","address","lat","lon")],
+           nicu11[,c("hosp_id","hosp_name","full_address","city_state_zip","beds","num_drs","drop","level","address_changed","notes","imputation")], 
+           by = "full_address")
+write.csv(m, "../cleannicu11_geocoded.csv", row.names = FALSE)
+
+#Bring in USA county file 
+cnty <- tigris::counties(state = NULL)
+#Change cnty polygons to NAD83 
+cnty <- sf::st_transform(cnty, crs = "ESRI:102003")
+
+# Fix invalid geometries
+cnty <- sf::st_make_valid(cnty)
+
+nicu11_pts <- sf::st_as_sf(m, coords = c("lon", "lat"), crs = 4326)
+nicu11_pts <- sf::st_transform(nicu11_pts, crs = "ESRI:102003")
+nicu11_pts <- sf::st_join(nicu11_pts, cnty)
+
+nicu11_pts[nicu11_pts$STATEFP == 53,c("hosp_name","address","beds","level","drop","address_changed","notes","imputation","STATEFP","COUNTYFP","NAME")]
+nicu11_pts[!is.na(nicu11_pts$drop),c("hosp_name","address","beds","level","drop","address_changed","notes","imputation","STATEFP","COUNTYFP","NAME")]
+
+write.csv(nicu11_pts[,c("hosp_name","full_address","beds","level","drop","address_changed","notes","imputation","STATEFP","COUNTYFP","NAME")],
+          "../nicu2011_20240611.csv", row.names = FALSE)
+```
+
+
+### 2023
+```{r Geocoding Addys, cache = FALSE}
+
+nicu23 <- read.csv("../cleannicu23_corrected.csv")
+nicu23 <- nicu23[is.na(nicu23$drop) | nicu23$drop != 1,]
+nicu23$full_address  <- clean_string(nicu23$full_address)
+nicu23$name          <- clean_string(nicu23$name)
+nicu23$hosp_id       <- paste0(substr(toupper(gsub("[^[:alnum:]]", "", nicu23$name)),1,2),
+                               substr(toupper(gsub("[^[:alnum:]]", "", nicu23$addr)),1,3),
+                               "_",nicu23$state,nicu23$zip)
+
+
+#nicu23.geo <- mutate_geocode(nicu23, location = full_address, output = "latlona")
+#write.csv(nicu23.geo, "../cleannicu23_geocoded.csv")
+
+nicu23.geo <- read.csv("../geocode_copy/cleannicu23_geocoded.csv") #1403
+m <- merge(unique(nicu23.geo[,c("full_address","address","lat","lon")]),
+           nicu23[,c("hosp_id","name","full_address","city","state","zip","beds","level","type","drop","address_changed","notes","imputation")], 
+           by = "full_address", all.y = TRUE)
+# Geocodes added/correctd after trial period expired
+m[m$name == "EMANANTE HEALTH",c("lon","lat")] <- c(-117.9446757, 34.0632472)
+m[m$name == "ST. ANTHONY NORTH HOSPITAL",c("lon","lat")] <- c(-105.0183066, 39.8494428)
+m[m$name == "TRUMAN MEDICAL CENTER  LAKEWOOD",c("lat","lon")] <- c(37.83697759899836, -122.26769294458455)
+
+write.csv(m, "../cleannicu23_geocoded.csv", row.names = FALSE)
+```
+
+

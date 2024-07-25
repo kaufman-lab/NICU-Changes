@@ -1,0 +1,378 @@
+---
+title: "NICU Data Cleaning"
+author: "Amanda Gassett"
+date: "2024-04-16"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1800px !important;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r global_options, echo=FALSE, include=FALSE}
+options(width = 999)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, cache = TRUE, tidy = FALSE)
+```
+
+```{r, cache = TRUE, echo = FALSE}
+
+# Load libraries
+library(kableExtra)
+library(data.table)
+library(tigris)
+library(sf)
+library(ggplot2)
+
+# Here are all my special functions
+R_scan <- function(char.vec, splitter, component){
+  if (sum(is.na(char.vec[1])) > 0){temp <- NA}
+  else{
+    temp <- rep(NA, length(char.vec))
+    for (i in 1:length(char.vec)){
+      temp[i] <- strsplit(char.vec[i],splitter)[[1]][component]
+    }
+  }
+  temp
+}
+
+clean_string <- function(x){
+  toupper(gsub("[^\u0001-\u007F]+|<U\\+\\w+>", "", x))
+}
+
+standardize_string <- function(x){
+  temp <- toupper(gsub("[^[:alnum:]]", "", x))
+  temp <- gsub("HOSPITAL", "", temp)
+  temp <- gsub("MEDICALCENTER", "", temp)
+  temp
+}
+
+flag_pobox <- function(x){
+  temp <- toupper(gsub("[^[:alnum:]]", "", x))
+  grepl("POBOX", temp)
+}
+
+zpad <- function(x, n){
+  if (sum(nchar(x) < n) > 0){ 
+    x[nchar(x) < n] <- paste0("0",zpad(x[nchar(x) < n], n - 1))
+  }
+  x
+}
+```
+
+# Step One: Identify Unique Location Set For Each Year
+
+There's a pair of rows in the 1996 dataset that could represent the same facility in Tucson, AZ.  Bed count is similar.
+
+There's a pair of rows in the 2011 datset that could represent the same facility in Aurora, CO.  No bed count.
+
+In 2023, not clear what to do about the Baylor duplicate.  Bed counts are quite different but level is the same.
+
+Truman looks like 2 different facilities.  Cross-check with other years and Google.
+
+HCA/Tomball could be a duplicate.  Bed count for one but not the other.
+
+CT/Manchester could be a duplicate.  No bed count.
+
+Allen Memorial could be a duplicate.
+
+NW Hospital/UW Med Center - not sure, 2 different levels, no bed count for level II.
+
+Oakland and SF sound like different facilities although the address and bed count is the same.
+
+
+```{r, cache = TRUE, echo = FALSE}
+
+# Load geocodes
+all_nicu_geo <- read.csv("../nicu_locations.csv")
+all_nicu_geo$id <- paste0(round(all_nicu_geo$lat,4), round(all_nicu_geo$lon,4))
+all_nicu_geo$name_id <- standardize_string(clean_string(all_nicu_geo$name))
+
+# Remove facilities in PR
+all_nicu_geo <- all_nicu_geo[all_nicu_geo$lat > 24 | all_nicu_geo$lon < -80,]
+
+# Split by year
+nicu96_geo <- all_nicu_geo[all_nicu_geo$year == 1996,]
+nicu11_geo <- all_nicu_geo[all_nicu_geo$year == 2011,]
+nicu23_geo <- all_nicu_geo[all_nicu_geo$year == 2023,]
+
+# Load original address text
+nicu96 <- read.csv("../cleannicu96_corrected.csv")
+nicu96 <- nicu96[nicu96$out_of_area != 1 | is.na(nicu96$out_of_area),]
+nicu96$hosp_name     <- clean_string(nicu96$hosp_name)
+nicu96$full_address  <- clean_string(nicu96$full_address)
+nicu96$clean_address <- standardize_string(nicu96$full_address)
+nicu96$pobox_flag    <- flag_pobox(nicu96$clean_address)
+nicu96$name_id       <- standardize_string(clean_string(nicu96$hosp_name))
+nicu96$csz           <- paste0(toupper(nicu96$city),",",nicu96$state,zpad(R_scan(as.character(nicu96$zip),"-",1),5))
+
+nicu11 <- read.csv("../cleannicu11_corrected.csv")
+nicu11 <- nicu11[nicu11$out_of_area != 1 | is.na(nicu11$out_of_area),]
+nicu11$hosp_name     <- clean_string(nicu11$hosp_name)
+nicu11$full_address  <- clean_string(nicu11$full_address)
+nicu11$clean_address <- standardize_string(nicu11$full_address)
+nicu11$pobox_flag    <- flag_pobox(nicu11$clean_address)
+nicu11$name_id       <- standardize_string(clean_string(nicu11$hosp_name))
+nicu11$csz           <- toupper(nicu11$city_state_zip)
+
+nicu23 <- read.csv("../cleannicu23_corrected.csv")
+nicu23$full_address  <- clean_string(nicu23$full_address)
+nicu23$name          <- clean_string(nicu23$name)
+nicu23$clean_address <- standardize_string(nicu23$full_address)
+nicu23$pobox_flag    <- flag_pobox(nicu23$clean_address)
+nicu23$name_id       <- standardize_string(clean_string(nicu23$name))
+nicu23$csz           <- paste0(toupper(nicu23$city),",",nicu23$state,zpad(R_scan(as.character(nicu23$zip),"-",1),5))
+
+```
+
+## Identify direct duplicates in address text
+
+```{r, cache = TRUE, echo = TRUE}
+
+# 1996
+# nicu96[duplicated(nicu96$clean_address),]
+nicu96[nicu96$clean_address == "1501NCAMPBELLAVETUCSONAZ85724",c("hosp_name","full_address","nicu_beds","num_neonats")]
+
+# 2011
+# nicu11[duplicated(nicu11$clean_address),]
+nicu11[nicu11$clean_address == "1501SPOTOMACSTAURORACO80012",c("hosp_name","full_address","nicu_beds","num_neonats")]
+
+# 2023
+# nicu23[duplicated(nicu23$clean_address),]
+temp <-  nicu23[nicu23$clean_address == "14008THAVEFORTWORTHTX76104" |
+                nicu23$clean_address == "71HAYNESSTMANCHESTERCT06040" |  
+                nicu23$clean_address == "605HOLDERRIETHBLVDTOMBALLTX77375" |
+                nicu23$clean_address == "2301HOLMESSTKANSASCITYMO64108",]
+temp[order(temp$clean_address),c("name","full_address","level","beds","type")]
+
+temp <-  nicu23[nicu23$clean_address == "19754THSTSANFRANCISCOCA94158" |
+                nicu23$clean_address == "1825LOGANAVEWATERLOOIA50703" |
+                nicu23$clean_address == "1959NEPACIFICSTSEATTLEWA98195",]
+temp[order(temp$clean_address),c("name","full_address","level","beds","type")]
+
+```
+## Identify additional overlaps in lat/long, if any
+
+```{r, echo = TRUE}
+# 1996
+dup_ids <- nicu96_geo[duplicated(nicu96_geo$id),"id"]
+temp <- nicu96_geo[nicu96_geo$id %in% dup_ids,]
+temp[order(temp$id),c("name","beds","type","level","lat","lon")]
+
+# 2011
+dup_ids <- nicu11_geo[duplicated(nicu11_geo$id),"id"]
+temp <- nicu11_geo[nicu11_geo$id %in% dup_ids,]
+temp[order(temp$id),c("name","beds","type","level","lat","lon")]
+
+# 2023
+dup_ids <- nicu23_geo[duplicated(nicu23_geo$id),"id"]
+temp <- nicu23_geo[nicu23_geo$id %in% dup_ids,]
+temp[order(temp$id),c("name","beds","type","level","lat","lon")]
+
+```
+
+## Look at duplicates across years
+
+### Tucson, AZ
+
+```{r, echo = TRUE}
+
+nicu96[grep("TUCSON, AZ",nicu96$csz),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grep("TUCSON, AZ",nicu11$csz),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grep("TUCSON",nicu23$csz),c("name","beds","level","full_address","name_id")]
+
+# Remove 1996 duplicate
+all_nicu_geo <- all_nicu_geo[!(all_nicu_geo$year == 1996 & all_nicu_geo$id == "32.2404-110.9466" & all_nicu_geo$name_id == "UNIVERSITY"),]
+
+# Banner is the same location
+temp <- all_nicu_geo[all_nicu_geo$year == 1996 & all_nicu_geo$id == "32.2404-110.9466",]
+all_nicu_geo[all_nicu_geo$name_id == "BANNERUNIVERSITYTUCSON",c("lat","lon","id","name_id")] <- temp[,c("lat","lon","id","name_id")]
+all_nicu_geo[all_nicu_geo$id == "32.2404-110.9466",c("name","year","level","beds")]
+```
+
+### Bellevue Center
+
+Looks like the Bellevue Center with the smaller number of beds in 1996 is the same as the Woman's Center.
+
+```{r, echo = TRUE}
+all_nicu_geo[grep("BELLEVUE",all_nicu_geo$name),]
+all_nicu_geo[all_nicu_geo$name_id == "BELLEVUECENTER" & 
+               all_nicu_geo$beds == 10 & 
+               all_nicu_geo$year == 1996,c("lat","lon","id","name_id")] <- all_nicu_geo[all_nicu_geo$name_id == "BELLEVUEWOMANS",
+                                                                                        c("lat","lon","id","name_id")]
+```
+
+### Aurora, CO
+```{r, echo = TRUE}
+
+temp <- all_nicu_geo[grepl("AURORA",all_nicu_geo$name) & all_nicu_geo$lat < 40,c("name","name_id","id","year","beds","level","type")]
+temp
+
+```
+
+### Baylor - Ft Worth, TX
+
+Is it 42 or 63 beds?
+
+```{r, echo = TRUE}
+temp <- all_nicu_geo[grepl("BAYLOR",all_nicu_geo$name),c("name","name_id","id","year","beds","level","type")]
+temp[order(temp$id),]
+```
+
+### Truman - Kansas City, MO
+
+There's a University Health in Lakewood at 38.97496610586617, -94.39444840066578
+7900 Lee's Summit Rd, Kansas City MO 64139
+
+```{r, echo = TRUE}
+nicu96[grep("TRUMAN",nicu96$name_id),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grep("TRUMAN",nicu11$name_id),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grep("TRUMAN",nicu23$name_id),c("name","beds","level","full_address","name_id")]
+
+nicu96[grep("64139",nicu96$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grep("64139",nicu11$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grep("64139",nicu23$full_address),c("name","beds","level","full_address","name_id")]
+
+nicu96[grep("KANSAS",nicu96$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grep("KANSAS",nicu11$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grep("KANSAS",nicu23$full_address),c("name","beds","level","full_address","name_id")]
+
+
+temp <- all_nicu_geo[grepl("TRUMAN",all_nicu_geo$name) | grepl("LAKEWOOD",all_nicu_geo$name)
+                       ,c("name","name_id","id","year","beds","level","type")]
+temp[order(temp$id),]
+```
+### Tomball TX
+
+```{r, echo = TRUE}
+
+nicu96[grep("TOMBALL",nicu96$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grep("TOMBALL",nicu11$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grep("TOMBALL",nicu23$full_address),c("name","beds","level","full_address","name_id")]
+
+temp <- all_nicu_geo[grepl("TOMBALL",all_nicu_geo$name)
+                       ,c("name","name_id","id","year","beds","level","type")]
+temp[order(temp$id),]
+```
+
+### Manchester, CT
+
+Wikipedia:
+Manchester Memorial Hospital is a 249-bed community hospital located in central Manchester, Connecticut, an eastern Connecticut community about 10 minutes east of Hartford. The hospital opened in 1920, and was dedicated as a memorial to all Manchester residents who died during the First World War. In 1970, the hospital was rededicated as a memorial to veterans of all wars.
+
+I think this is just a duplicate, but I find it odd that it doesn't appear to have existed before 2023.
+
+```{r, echo = TRUE}
+
+nicu96[grep("MANCHESTER",nicu96$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grep("MANCHESTER",nicu11$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grep("MANCHESTER",nicu23$full_address),c("name","beds","level","full_address","name_id")]
+
+temp <- all_nicu_geo[grepl("MANCHESTER",all_nicu_geo$name) | all_nicu_geo$id == "41.7814-72.5256"
+                       ,c("name","name_id","id","year","beds","level","type")]
+temp[order(temp$id),]
+
+all_nicu_geo <- all_nicu_geo[!(all_nicu_geo$name_id == "EASTERNCONNECTICUTHEALTHNETWORK"),]
+```
+
+### Waterloo, IA
+```{r, echo = TRUE}
+nicu96[grepl("WATERLOO", nicu96$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grepl("WATERLOO", nicu11$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grepl("WATERLOO", nicu23$full_address),c("name","beds","full_address","name_id")]
+
+```
+
+### Northwest Hospital/UW Medical Center
+
+Address isn't right for Northwest Hospital in 2023.
+
+```{r, echo = TRUE}
+nicu96[grepl("SEATTLE", nicu96$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu11[grepl("SEATTLE", nicu11$full_address),c("hosp_name","nicu_beds","full_address","name_id")]
+nicu23[grepl("SEATTLE", nicu23$full_address),c("name","beds","full_address","name_id")]
+
+```
+
+## 1996 PO Boxes
+
+
+```{r, echo = TRUE}
+nicu96[nicu96$pobox_flag == TRUE,c("hosp_name","csz","nicu_beds")]
+temp <- nicu96[nicu96$pobox_flag == TRUE,c("hosp_name","city","state","zip","nicu_beds")]
+
+for (i in 1:dim(temp)[1]){
+  print("1996")
+  print(temp[i,])
+  print("2011")
+  print(nicu11[grepl(clean_string(temp$city[i]), clean_string(nicu11$csz)) & 
+                 grepl(clean_string(temp$state[i]), clean_string(nicu11$csz)) ,c("hosp_name","csz","nicu_beds")])
+  print("2023")
+  print(nicu23[grepl(standardize_string(temp$city[i]), standardize_string(nicu23$csz)) & 
+                 grepl(standardize_string(temp$state[i]), standardize_string(nicu23$csz)) ,c("name","csz","beds")])
+  print(" ")
+  print(" ")
+  print(" ")
+}
+
+
+```
+
+
+94143 is a tiny zip that's directly over part of the building of the UCSF hospital
+In 2011 I think "UCSF MEDICAL CENTER; PARNASSUS SAN FRANCISCO" is the equivalent
+
+San Joaquin General still has a NICU but it's in French Camp not Stockton
+https://www.sanjoaquingeneral.org/neonatal-intensive-care
+Anyway the 1996 is probably the same as 2011 SAN JOAQUIN GENERAL HOSPITAL STOCKTON, CA 95202
+
+SGMC same as 2023? SOUTH GEORGIA MEDICAL CENTER VALDOSTA,GA31602  But missing for 2011?
+
+15) https://en.wikipedia.org/wiki/Carolinas_Medical_Center "attached to Levine Children's Hospital"
+"In 2007, the multistory Levine Children's Hospital was completed and opened, making it the second largest children's hospital in the Southeastern United States, after Washington, D.C."
+
+16) https://en.wikipedia.org/wiki/Wesley_Long_Hospital 
+https://en.wikipedia.org/wiki/Cone_Health_Women%27s_Hospital#:~:text=In%20a%20deal%20announced%20September,the%20building%20was%20torn%20down.
+In a deal announced September 1, 2021, Cone Health traded the property to Deep River Partners in exchange for a lot on Green Valley Road, near where Cone Health had another facility. The pandemic had delayed Deep River's plans.[1]
+
+In January 2022, the building was torn down.[2]
+
+So as of 2023, this does not exist it's an empty dirt lot per satellite image, but there's a women and children's center not too far away at
+1121 North Church Street Entrance C, Greensboro, NC 27401
+
+17) Mission Hospital McDowell
+430 Rankin Dr, Marion, NC 28752
+Maybe they no longer have NICU beds but the hospital is still at this location
+
+19) Why Cincinnati Children's is missing from 1996? The hospital opened in March 1884
+In 1926, the hospital moved to a new 200-bed facility near the College of Medicine and established an academic affiliation with the college. In 1928, William Cooper Procter donated $2.5 million to build and endow The Children's Hospital Research Foundation, which opened in 1931. The hospital entered the decade of the 1930s as an important center for pediatric patient care, education and research—as it continues to be today.
+
+It's ~ half a mile from the University medical center
+
+21) I think all 3 years should be at 420 S. FIFTH AVENUE WEST READING PA 19611 despite the addr change in 2023, I think that's admin offices
+
+22) McLeod
+MCLEOD REGIONAL MEDICAL CENTER 555 E CHEVES ST FLORENCE SC 29506
+
+23) Mary Black same as 2011
+MARY BLACK MEMORIAL HOSPITAL 1700 SKYLYN DR. SPARTANBURG, SC 29307
+Spartanburg Medical Center is a Baby-Friendly® acute care hospital with a Level III NICU and an OB Laborist program to ensure a qualified professional is on-site every day, 24 hours a day,
+
+Missing from 2023:
+https://www.spartanburgregional.com/locations/spartanburg-medical-center-mary-black-campus
+For more than 90 years, Spartanburg Medical Center - Mary Black Campus has provided healthcare to the Upstate. The facility features surgical suites, nationally accredited inpatient rehabilitation, a 24-bed emergency department, Neonatal Intensive Care services, geriatric psychiatric services, a joint care program, cardiology services, a nationally accredited chest pain center and a sleep center.
+
+26) Holston Valley
+https://www.balladhealth.org/saving-lives/nicu-updates
+Level III xonsolidated in ~2019 to Niswonger Children's
+"We are maintaining newborn services and nurseries at our hospitals throughout the region. Healthy babies, or babies born with minor complications, will still receive the excellent care they need at our nurseries in Kingsport, Bristol, Johnson City, Greeneville, Abingdon and Wise County, VA."
+
+Boston, MA
+Brigham and Women's is adjacent to the children's hospital, and it looks like they share drs.  Combined number of beds is at least 46 + 16.
+
+San Diego, CA
+Sharp Mary Birch Memorial Hospital for Women is adjacent to the children's hospital and share drs.  Combined number of beds is at least 32 + 61.
+
