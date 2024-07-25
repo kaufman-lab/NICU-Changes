@@ -1,5 +1,13 @@
 # NICU-Changes
 
+## NICU data cleaning and geocoding
+
+Geocoding was originally done by emblake23 using the GoogleMaps API.  Because our trial period has expired we cannot easily re-run this part of the code, so geocodes that needed to be added or edited after the trial period were done manually and merged with an export of the original geocodes.
+
+## Exclusions
+Locations in Puerto Rico were dropped.  Duplicated facilities (for example, facilties listed twice with different names but the same address and similar capacity) were flagged and dropped.
+
+
 ## Data Contributed By emblake23:
 
 See original code and files at emblake23/NICU-Changes
